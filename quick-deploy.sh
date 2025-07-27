@@ -100,15 +100,15 @@ docker network create station2290-network 2>/dev/null || true
 
 # Stop any existing containers
 log "Stopping existing containers..."
-docker-compose -f "$DOCKER_COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+docker compose -f "$DOCKER_COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 
 # Pull images
 log "Pulling Docker images..."
-docker-compose -f "$DOCKER_COMPOSE_FILE" pull
+docker compose -f "$DOCKER_COMPOSE_FILE" pull
 
 # Start infrastructure services
 log "Starting infrastructure services (PostgreSQL, Redis)..."
-docker-compose -f "$DOCKER_COMPOSE_FILE" up -d postgres redis
+docker compose -f "$DOCKER_COMPOSE_FILE" up -d postgres redis
 
 # Wait for database
 log "Waiting for database to be ready..."
@@ -116,7 +116,7 @@ sleep 30
 
 # Check if database is ready
 for i in {1..10}; do
-    if docker-compose -f "$DOCKER_COMPOSE_FILE" exec postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" &>/dev/null; then
+    if docker compose -f "$DOCKER_COMPOSE_FILE" exec postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" &>/dev/null; then
         log "Database is ready"
         break
     fi
@@ -126,15 +126,15 @@ done
 
 # Start monitoring services
 log "Starting monitoring services..."
-docker-compose -f "$DOCKER_COMPOSE_FILE" up -d prometheus grafana loki
+docker compose -f "$DOCKER_COMPOSE_FILE" up -d prometheus grafana loki
 
 # Start nginx
 log "Starting nginx reverse proxy..."
-docker-compose -f "$DOCKER_COMPOSE_FILE" up -d nginx
+docker compose -f "$DOCKER_COMPOSE_FILE" up -d nginx
 
 # Check services
 log "Checking service status..."
-docker-compose -f "$DOCKER_COMPOSE_FILE" ps
+docker compose -f "$DOCKER_COMPOSE_FILE" ps
 
 echo ""
 echo -e "${GREEN}✅ Infrastructure deployment completed!${NC}"
