@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Quick Station2290 Deployment Script
-# Simple deployment without all the advanced features
+# Station2290 Infrastructure Deployment Script
+# Deploys only infrastructure services (PostgreSQL, Redis, Nginx, Monitoring)
+# Applications are deployed separately via GitHub Actions
 
 set -e
 
@@ -12,12 +13,12 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-echo -e "${BLUE}🚀 Station2290 Quick Deployment${NC}"
-echo "=================================="
+echo -e "${BLUE}🏗️ Station2290 Infrastructure Deployment${NC}"
+echo "===========================================" 
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOCKER_COMPOSE_FILE="$SCRIPT_DIR/docker/production/docker-compose.yml"
+DOCKER_COMPOSE_FILE="$SCRIPT_DIR/docker/production/docker-compose.infrastructure.yml"
 ENV_FILE="$SCRIPT_DIR/configs/environment/.env.prod"
 
 # Function to log messages
@@ -106,8 +107,8 @@ docker compose -f "$DOCKER_COMPOSE_FILE" down --remove-orphans 2>/dev/null || tr
 log "Pulling Docker images..."
 docker compose -f "$DOCKER_COMPOSE_FILE" pull
 
-# Start infrastructure services
-log "Starting infrastructure services (PostgreSQL, Redis)..."
+# Start database services
+log "Starting database services (PostgreSQL, Redis)..."
 docker compose -f "$DOCKER_COMPOSE_FILE" up -d postgres redis
 
 # Wait for database
@@ -116,7 +117,7 @@ sleep 30
 
 # Check if database is ready
 for i in {1..10}; do
-    if docker compose -f "$DOCKER_COMPOSE_FILE" exec postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" &>/dev/null; then
+    if docker compose -f "$DOCKER_COMPOSE_FILE" exec postgres pg_isready -U "${POSTGRES_USER:-station2290_user}" -d "${POSTGRES_DB:-station2290}" &>/dev/null; then
         log "Database is ready"
         break
     fi
@@ -128,9 +129,13 @@ done
 log "Starting monitoring services..."
 docker compose -f "$DOCKER_COMPOSE_FILE" up -d prometheus grafana loki
 
-# Start nginx
+# Start nginx reverse proxy  
 log "Starting nginx reverse proxy..."
 docker compose -f "$DOCKER_COMPOSE_FILE" up -d nginx
+
+# Start additional infrastructure services
+log "Starting additional infrastructure services..."
+docker compose -f "$DOCKER_COMPOSE_FILE" up -d certbot healthcheck
 
 # Check services
 log "Checking service status..."
@@ -139,17 +144,23 @@ docker compose -f "$DOCKER_COMPOSE_FILE" ps
 echo ""
 echo -e "${GREEN}✅ Infrastructure deployment completed!${NC}"
 echo ""
-echo "Services started:"
+echo "Infrastructure services started:"
 echo "  🗄️  PostgreSQL: localhost:5432"
 echo "  🔑 Redis: localhost:6379" 
 echo "  📊 Prometheus: http://localhost:9090"
-echo "  📈 Grafana: http://localhost:3001 (admin:${GRAFANA_ADMIN_PASSWORD})"
-echo "  🌐 Nginx: http://localhost"
+echo "  📈 Grafana: http://localhost:3001 (admin:${GRAFANA_ADMIN_PASSWORD:-admin})"
+echo "  🌐 Nginx: http://localhost (reverse proxy ready)"
+echo "  🛡️  Certbot: SSL certificate management"
+echo "  ❤️  Health Check: Service monitoring"
+echo ""
+echo -e "${YELLOW}Application Deployment:${NC}"
+echo "  Applications (api, web, bot, adminka, order-panel) are deployed"
+echo "  automatically via GitHub Actions when you push to their repositories."
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
-echo "  1. Configure your domain DNS to point to this server"
-echo "  2. Deploy your applications via GitHub Actions"
-echo "  3. Set up SSL certificates: ./deployment/ssl/setup-ssl.sh"
-echo "  4. Monitor logs: docker compose -f $DOCKER_COMPOSE_FILE logs -f"
+echo "  1. Push changes to application repositories to trigger deployments"
+echo "  2. Set up SSL certificates: ./ssl/setup-ssl.sh"
+echo "  3. Monitor infrastructure: docker compose -f $DOCKER_COMPOSE_FILE logs -f"
+echo "  4. Check Grafana dashboards: http://localhost:3001"
 echo ""
-echo -e "${BLUE}Infrastructure is ready for application deployment!${NC}"
+echo -e "${BLUE}🎉 Infrastructure is ready! Applications will auto-deploy via GitHub Actions.${NC}"

@@ -1,0 +1,169 @@
+version: '3.8'
+
+services:
+  # Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: station2290-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-station2290}
+      POSTGRES_USER: ${POSTGRES_USER:-station2290_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - /opt/station2290/backups:/backups
+    networks:
+      - station2290-network
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-station2290_user} -d ${POSTGRES_DB:-station2290}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Cache
+  redis:
+    image: redis:7-alpine
+    container_name: station2290-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - station2290-network
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: station2290-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/sites-available:/etc/nginx/sites-available:ro
+      - ../nginx/sites-enabled:/etc/nginx/sites-enabled:ro
+      - ../nginx/snippets:/etc/nginx/snippets:ro
+      - /opt/station2290/ssl:/etc/nginx/ssl:ro
+      - /opt/station2290/logs/nginx:/var/log/nginx
+    networks:
+      - station2290-network
+    depends_on:
+      - postgres
+      - redis
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # SSL Certificate Management
+  certbot:
+    image: certbot/certbot
+    container_name: station2290-certbot
+    volumes:
+      - /opt/station2290/ssl:/etc/letsencrypt
+      - /opt/station2290/logs/certbot:/var/log/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+  # Monitoring - Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: station2290-prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - station2290-network
+
+  # Monitoring - Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: station2290-grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana:/etc/grafana/provisioning:ro
+    networks:
+      - station2290-network
+    depends_on:
+      - prometheus
+
+  # Logging - Loki
+  loki:
+    image: grafana/loki:latest
+    container_name: station2290-loki
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ../monitoring/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - station2290-network
+
+  # System Health Check
+  healthcheck:
+    image: alpine/curl
+    container_name: station2290-healthcheck
+    restart: unless-stopped
+    command: |
+      sh -c "
+        while true; do
+          echo 'Running health checks...'
+          curl -f http://postgres:5432 >/dev/null 2>&1 && echo 'PostgreSQL: OK' || echo 'PostgreSQL: FAIL'
+          curl -f http://redis:6379 >/dev/null 2>&1 && echo 'Redis: OK' || echo 'Redis: FAIL'
+          curl -f http://nginx:80 >/dev/null 2>&1 && echo 'Nginx: OK' || echo 'Nginx: FAIL'
+          sleep 300
+        done
+      "
+    networks:
+      - station2290-network
+    depends_on:
+      - postgres
+      - redis
+      - nginx
+
+networks:
+  station2290-network:
+    external: true
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
