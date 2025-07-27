@@ -1,0 +1,394 @@
+# Station2290 Development Docker Compose Configuration
+# Lightweight development environment with hot-reload and debugging capabilities
+
+version: '3.8'
+
+# Named volumes for development
+volumes:
+  postgres_dev_data:
+    driver: local
+  redis_dev_data:
+    driver: local
+  node_modules_api:
+    driver: local
+  node_modules_bot:
+    driver: local
+  node_modules_web:
+    driver: local
+  node_modules_adminka:
+    driver: local
+  node_modules_order_panel:
+    driver: local
+
+# Development network
+networks:
+  station2290_dev:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+services:
+  # Development Database
+  postgres-dev:
+    image: postgres:15-alpine
+    container_name: station2290_postgres_dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: station2290_dev
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    networks:
+      - station2290_dev
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev_user -d station2290_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+
+  # Development Redis
+  redis-dev:
+    image: redis:7-alpine
+    container_name: station2290_redis_dev
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_dev_data:/data
+    networks:
+      - station2290_dev
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
+
+  # API Development Service
+  api-dev:
+    build:
+      context: ${API_BUILD_CONTEXT:-../../../api}
+      dockerfile: Dockerfile
+      target: development
+    container_name: station2290_api_dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://dev_user:dev_password@postgres-dev:5432/station2290_dev
+      REDIS_URL: redis://redis-dev:6379
+      JWT_SECRET: dev-jwt-secret-key
+      JWT_REFRESH_SECRET: dev-jwt-refresh-secret-key
+      CORS_ORIGIN: http://localhost:3000,http://localhost:8080,http://localhost:8081
+      LOG_LEVEL: debug
+      HOT_RELOAD: true
+    volumes:
+      - ${API_SOURCE_PATH:-../../../api}:/app
+      - node_modules_api:/app/node_modules
+      - /app/dist  # Exclude dist directory
+      - /app/.next  # Exclude build directory
+    networks:
+      - station2290_dev
+    ports:
+      - "3001:3000"  # Different port for dev
+      - "9229:9229"  # Node.js debugging port
+    depends_on:
+      postgres-dev:
+        condition: service_healthy
+      redis-dev:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Installing dependencies...'
+        pnpm install
+        echo 'Running database migrations...'
+        pnpm db:migrate:dev
+        echo 'Starting development server with hot reload...'
+        pnpm run start:dev
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # Bot Development Service
+  bot-dev:
+    build:
+      context: ${BOT_BUILD_CONTEXT:-../../../bot}
+      dockerfile: Dockerfile
+      target: development
+    container_name: station2290_bot_dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      API_URL: http://api-dev:3000
+      WHATSAPP_BUSINESS_API_URL: ${WHATSAPP_BUSINESS_API_URL:-}
+      WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_WEBHOOK_VERIFY_TOKEN: ${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-dev_verify_token}
+      COFFEE_SHOP_API_KEY: ${COFFEE_SHOP_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TTS_ENABLED: false
+      LOG_LEVEL: debug
+      HOT_RELOAD: true
+    volumes:
+      - ${BOT_SOURCE_PATH:-../../../bot}:/app
+      - node_modules_bot:/app/node_modules
+      - /app/dist
+    networks:
+      - station2290_dev
+    ports:
+      - "3002:3001"  # Different port for dev
+      - "9230:9229"  # Node.js debugging port
+    depends_on:
+      - api-dev
+    command: >
+      sh -c "
+        echo 'Installing dependencies...'
+        pnpm install
+        echo 'Starting development server...'
+        pnpm run start:dev
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # Web Development Service
+  web-dev:
+    build:
+      context: ${WEB_BUILD_CONTEXT:-../../../web}
+      dockerfile: Dockerfile
+      target: development
+    container_name: station2290_web_dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXTAUTH_SECRET: dev-nextauth-secret
+      NEXTAUTH_URL: http://localhost:3000
+      FAST_REFRESH: true
+      CHOKIDAR_USEPOLLING: true
+    volumes:
+      - ${WEB_SOURCE_PATH:-../../../web}:/app
+      - node_modules_web:/app/node_modules
+      - /app/.next
+    networks:
+      - station2290_dev
+    ports:
+      - "3000:3000"
+      - "9231:9229"  # Node.js debugging port
+    depends_on:
+      - api-dev
+    command: >
+      sh -c "
+        echo 'Installing dependencies...'
+        pnpm install
+        echo 'Starting Next.js development server...'
+        pnpm run dev
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # Admin Panel Development Service
+  adminka-dev:
+    build:
+      context: ${ADMINKA_BUILD_CONTEXT:-../../../adminka}
+      dockerfile: Dockerfile
+      target: development
+    container_name: station2290_adminka_dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      VITE_API_URL: http://localhost:3001
+      VITE_HOT_RELOAD: true
+      CHOKIDAR_USEPOLLING: true
+    volumes:
+      - ${ADMINKA_SOURCE_PATH:-../../../adminka}:/app
+      - node_modules_adminka:/app/node_modules
+      - /app/dist
+    networks:
+      - station2290_dev
+    ports:
+      - "8080:5173"  # Vite dev server port
+    depends_on:
+      - api-dev
+    command: >
+      sh -c "
+        echo 'Installing dependencies...'
+        pnpm install
+        echo 'Starting Vite development server...'
+        pnpm run dev --host 0.0.0.0
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5173"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # Order Panel Development Service
+  order-panel-dev:
+    build:
+      context: ${ORDER_PANEL_BUILD_CONTEXT:-../../../order-panel}
+      dockerfile: Dockerfile
+      target: development
+    container_name: station2290_order_panel_dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      VITE_API_URL: http://localhost:3001
+      VITE_HOT_RELOAD: true
+      CHOKIDAR_USEPOLLING: true
+    volumes:
+      - ${ORDER_PANEL_SOURCE_PATH:-../../../order-panel}:/app
+      - node_modules_order_panel:/app/node_modules
+      - /app/dist
+    networks:
+      - station2290_dev
+    ports:
+      - "8081:5173"  # Vite dev server port
+    depends_on:
+      - api-dev
+    command: >
+      sh -c "
+        echo 'Installing dependencies...'
+        pnpm install
+        echo 'Starting Vite development server...'
+        pnpm run dev --host 0.0.0.0
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5173"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # Development Nginx (optional, for testing proxy configs)
+  nginx-dev:
+    image: nginx:1.25-alpine
+    container_name: station2290_nginx_dev
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/sites-available:/etc/nginx/sites-available:ro
+      - ../configs/nginx/dev-sites:/etc/nginx/sites-enabled:ro
+      - ../nginx/snippets:/etc/nginx/snippets:ro
+    networks:
+      - station2290_dev
+    depends_on:
+      - api-dev
+      - web-dev
+      - adminka-dev
+      - order-panel-dev
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Mailhog for email testing
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: station2290_mailhog_dev
+    restart: unless-stopped
+    networks:
+      - station2290_dev
+    ports:
+      - "1025:1025"  # SMTP server
+      - "8025:8025"  # Web UI
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+
+  # Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: station2290_redis_commander_dev
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis-dev:6379
+    networks:
+      - station2290_dev
+    ports:
+      - "8082:8081"
+    depends_on:
+      - redis-dev
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+
+  # pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: station2290_pgadmin_dev
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@station2290.ru
+      PGADMIN_DEFAULT_PASSWORD: dev_password
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - ./configs/pgadmin/servers.json:/pgadmin4/servers.json:ro
+    networks:
+      - station2290_dev
+    ports:
+      - "8083:80"
+    depends_on:
+      - postgres-dev
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+
+  # Jaeger for distributed tracing (optional)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: station2290_jaeger_dev
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: true
+    networks:
+      - station2290_dev
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger collector
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'

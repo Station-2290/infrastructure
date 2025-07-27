@@ -1,0 +1,663 @@
+# Station2290 Production Docker Compose Configuration
+# Comprehensive multi-service deployment with monitoring and observability
+
+version: '3.8'
+
+# Named volumes for persistent data
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/data/postgres
+      o: bind
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/data/redis
+      o: bind
+  nginx_logs:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/logs/nginx
+      o: bind
+  letsencrypt_certs:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/ssl/certs
+      o: bind
+  letsencrypt_challenges:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/ssl/challenges
+      o: bind
+  api_uploads:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/data/uploads
+      o: bind
+  bot_sessions:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/data/bot-sessions
+      o: bind
+  prometheus_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/monitoring/prometheus
+      o: bind
+  grafana_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/monitoring/grafana
+      o: bind
+  loki_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/station2290/monitoring/loki
+      o: bind
+
+# Networks for service isolation
+networks:
+  station2290_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+  monitoring_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1
+  database_network:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
+          gateway: 172.22.0.1
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: station2290_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-station2290}
+      POSTGRES_USER: ${POSTGRES_USER:-station2290_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./configs/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./configs/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    networks:
+      - database_network
+      - station2290_network
+    ports:
+      - "127.0.0.1:5432:5432"
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+      -c hba_file=/etc/postgresql/pg_hba.conf
+      -c log_statement=all
+      -c log_min_duration_statement=1000
+      -c shared_preload_libraries=pg_stat_statements
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-station2290_user} -d ${POSTGRES_DB:-station2290}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    container_name: station2290_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --rdbcompression yes
+      --rdbchecksum yes
+    volumes:
+      - redis_data:/data
+      - ./configs/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - database_network
+      - station2290_network
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Application Services
+  api:
+    build:
+      context: ${API_BUILD_CONTEXT:-../../../api}
+      dockerfile: Dockerfile
+      target: production
+      args:
+        NODE_ENV: production
+    image: station2290/api:${API_VERSION:-latest}
+    container_name: station2290_api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-station2290_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-station2290}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-100}
+      UPLOAD_MAX_SIZE: ${UPLOAD_MAX_SIZE:-50MB}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - api_uploads:/app/uploads
+      - ./configs/api/app.config.json:/app/config/production.json:ro
+    networks:
+      - station2290_network
+      - database_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+        reservations:
+          memory: 1G
+          cpus: '1'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "10"
+
+  bot:
+    build:
+      context: ${BOT_BUILD_CONTEXT:-../../../bot}
+      dockerfile: Dockerfile
+      target: production
+      args:
+        NODE_ENV: production
+    image: station2290/bot:${BOT_VERSION:-latest}
+    container_name: station2290_bot
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      API_URL: http://api:3000
+      WHATSAPP_BUSINESS_API_URL: ${WHATSAPP_BUSINESS_API_URL}
+      WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN}
+      WHATSAPP_WEBHOOK_VERIFY_TOKEN: ${WHATSAPP_WEBHOOK_VERIFY_TOKEN}
+      COFFEE_SHOP_API_KEY: ${COFFEE_SHOP_API_KEY}
+      WHATSAPP_SESSION_PATH: /app/sessions
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      TTS_ENABLED: ${TTS_ENABLED:-false}
+      TTS_MODEL_ID: ${TTS_MODEL_ID:-onnx-community/Kokoro-82M-v1.0-ONNX}
+      TTS_DTYPE: ${TTS_DTYPE:-q8}
+      TTS_DEVICE: ${TTS_DEVICE:-cpu}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BOT_RATE_LIMIT: ${BOT_RATE_LIMIT:-2}
+    volumes:
+      - bot_sessions:/app/sessions
+      - ./configs/bot/config.json:/app/config/production.json:ro
+    networks:
+      - station2290_network
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+        reservations:
+          memory: 1G
+          cpus: '1'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "10"
+
+  web:
+    build:
+      context: ${WEB_BUILD_CONTEXT:-../../../web}
+      dockerfile: Dockerfile
+      target: production
+      args:
+        NODE_ENV: production
+        NEXT_PUBLIC_API_URL: https://api.station2290.ru
+    image: station2290/web:${WEB_VERSION:-latest}
+    container_name: station2290_web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: https://api.station2290.ru
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: https://station2290.ru
+    networks:
+      - station2290_network
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  adminka:
+    build:
+      context: ${ADMINKA_BUILD_CONTEXT:-../../../adminka}
+      dockerfile: Dockerfile
+      target: production
+      args:
+        NODE_ENV: production
+        VITE_API_URL: https://api.station2290.ru
+    image: station2290/adminka:${ADMINKA_VERSION:-latest}
+    container_name: station2290_adminka
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      VITE_API_URL: https://api.station2290.ru
+    networks:
+      - station2290_network
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  order-panel:
+    build:
+      context: ${ORDER_PANEL_BUILD_CONTEXT:-../../../order-panel}
+      dockerfile: Dockerfile
+      target: production
+      args:
+        NODE_ENV: production
+        VITE_API_URL: https://api.station2290.ru
+    image: station2290/order-panel:${ORDER_PANEL_VERSION:-latest}
+    container_name: station2290_order_panel
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      VITE_API_URL: https://api.station2290.ru
+    networks:
+      - station2290_network
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Infrastructure Services
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: station2290_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Monitoring port
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/sites-available:/etc/nginx/sites-available:ro
+      - ../nginx/sites-enabled:/etc/nginx/sites-enabled:ro
+      - ../nginx/snippets:/etc/nginx/snippets:ro
+      - nginx_logs:/var/log/nginx
+      - letsencrypt_certs:/etc/letsencrypt:ro
+      - letsencrypt_challenges:/var/www/certbot:ro
+      - ./configs/nginx/maintenance:/usr/share/nginx/html:ro
+    networks:
+      - station2290_network
+    depends_on:
+      - api
+      - bot
+      - web
+      - adminka
+      - order-panel
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: station2290_certbot
+    restart: unless-stopped
+    volumes:
+      - letsencrypt_certs:/etc/letsencrypt
+      - letsencrypt_challenges:/var/www/certbot
+      - ./configs/certbot/renewal-hooks:/etc/letsencrypt/renewal-hooks
+    networks:
+      - station2290_network
+    environment:
+      DOMAINS: ${SSL_DOMAINS:-station2290.ru,www.station2290.ru,api.station2290.ru,adminka.station2290.ru,orders.station2290.ru,bot.station2290.ru}
+      EMAIL: ${SSL_EMAIL:-admin@station2290.ru}
+    command: >
+      sh -c "
+        echo 'Starting Certbot service...'
+        while :; do
+          echo 'Checking for certificate renewal...'
+          certbot renew --webroot --webroot-path=/var/www/certbot --quiet
+          if [ $? -eq 0 ]; then
+            echo 'Certificate renewal check completed'
+            nginx -s reload 2>/dev/null || echo 'Nginx reload failed or not running'
+          else
+            echo 'Certificate renewal failed'
+          fi
+          echo 'Sleeping for 12 hours...'
+          sleep 12h
+        done
+      "
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Monitoring Services
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: station2290_prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    volumes:
+      - prometheus_data:/prometheus
+      - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/prometheus/rules:/etc/prometheus/rules:ro
+    networks:
+      - monitoring_network
+      - station2290_network
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - api
+      - nginx
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: station2290_grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-worldmap-panel
+      GF_SERVER_ROOT_URL: https://monitoring.station2290.ru
+      GF_SERVER_DOMAIN: monitoring.station2290.ru
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ../monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - monitoring_network
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  loki:
+    image: grafana/loki:latest
+    container_name: station2290_loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+      - ../monitoring/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+    networks:
+      - monitoring_network
+    ports:
+      - "127.0.0.1:3100:3100"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # Backup Service
+  backup:
+    image: postgres:15-alpine
+    container_name: station2290_backup
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-station2290_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-station2290}
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 2 * * *}  # Daily at 2 AM
+    volumes:
+      - postgres_data:/var/lib/postgresql/data:ro
+      - /opt/station2290/backups:/backups
+      - ./scripts/backup:/scripts:ro
+    networks:
+      - database_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Installing cron...'
+        apk add --no-cache dcron
+        echo 'Setting up backup cron job...'
+        echo '$$BACKUP_SCHEDULE /scripts/backup-database.sh' | crontab -
+        echo 'Starting cron daemon...'
+        crond -f -d 8
+      "
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Health Check Service
+  healthcheck:
+    image: curlimages/curl:latest
+    container_name: station2290_healthcheck
+    restart: unless-stopped
+    networks:
+      - station2290_network
+    depends_on:
+      - nginx
+      - api
+      - bot
+    command: >
+      sh -c "
+        while true; do
+          echo 'Running health checks...'
+          /scripts/health-check.sh
+          sleep 300  # Check every 5 minutes
+        done
+      "
+    volumes:
+      - ./scripts/health-checks:/scripts:ro
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.1'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"

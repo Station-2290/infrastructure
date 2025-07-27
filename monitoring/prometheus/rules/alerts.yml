@@ -1,0 +1,340 @@
+# Prometheus Alerting Rules for Station2290
+# Comprehensive alerting for microservices monitoring
+
+groups:
+  # System-level alerts
+  - name: system
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is above 80% for more than 5 minutes on {{ $labels.instance }}"
+
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is above 85% for more than 5 minutes on {{ $labels.instance }}"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_size_bytes{fstype!="tmpfs"} - node_filesystem_free_bytes{fstype!="tmpfs"}) / node_filesystem_size_bytes{fstype!="tmpfs"} * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          service: system
+        annotations:
+          summary: "Disk space is running low"
+          description: "Disk usage is above 90% on {{ $labels.device }} for {{ $labels.instance }}"
+
+      - alert: SystemLoadHigh
+        expr: node_load15 > 2
+        for: 10m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "System load is high"
+          description: "15-minute load average is {{ $value }} on {{ $labels.instance }}"
+
+  # Docker container alerts
+  - name: docker
+    rules:
+      - alert: ContainerDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: docker
+        annotations:
+          summary: "Container is down"
+          description: "Container {{ $labels.job }} has been down for more than 1 minute"
+
+      - alert: ContainerHighCPU
+        expr: rate(container_cpu_usage_seconds_total[5m]) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: docker
+        annotations:
+          summary: "Container high CPU usage"
+          description: "Container {{ $labels.name }} CPU usage is above 80%"
+
+      - alert: ContainerHighMemory
+        expr: container_memory_usage_bytes / container_spec_memory_limit_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: docker
+        annotations:
+          summary: "Container high memory usage"
+          description: "Container {{ $labels.name }} memory usage is above 90%"
+
+      - alert: ContainerRestartLoop
+        expr: increase(container_restart_count[30m]) > 3
+        for: 5m
+        labels:
+          severity: critical
+          service: docker
+        annotations:
+          summary: "Container restart loop detected"
+          description: "Container {{ $labels.name }} has restarted {{ $value }} times in the last 30 minutes"
+
+  # Application-specific alerts
+  - name: api
+    rules:
+      - alert: APIHighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="api"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "API high response time"
+          description: "API 95th percentile response time is {{ $value }}s"
+
+      - alert: APIHighErrorRate
+        expr: rate(http_requests_total{job="api",status=~"5.."}[5m]) / rate(http_requests_total{job="api"}[5m]) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          service: api
+        annotations:
+          summary: "API high error rate"
+          description: "API error rate is {{ $value }}% over the last 5 minutes"
+
+      - alert: APILowThroughput
+        expr: rate(http_requests_total{job="api"}[5m]) * 60 < 10
+        for: 10m
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "API low throughput"
+          description: "API is receiving less than 10 requests per minute"
+
+      - alert: APIUnhealthy
+        expr: up{job="api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: api
+        annotations:
+          summary: "API service is down"
+          description: "API service has been down for more than 1 minute"
+
+  # Database alerts
+  - name: database
+    rules:
+      - alert: PostgreSQLDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database has been down for more than 1 minute"
+
+      - alert: PostgreSQLHighConnections
+        expr: pg_stat_database_numbackends / pg_settings_max_connections * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "PostgreSQL high connection usage"
+          description: "PostgreSQL connection usage is above 80%"
+
+      - alert: PostgreSQLSlowQueries
+        expr: pg_stat_activity_max_tx_duration > 300
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "PostgreSQL slow queries detected"
+          description: "PostgreSQL has queries running for more than 5 minutes"
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "Redis is down"
+          description: "Redis cache has been down for more than 1 minute"
+
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Redis high memory usage"
+          description: "Redis memory usage is above 90%"
+
+  # Web server alerts
+  - name: nginx
+    rules:
+      - alert: NginxDown
+        expr: up{job="nginx"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: nginx
+        annotations:
+          summary: "Nginx is down"
+          description: "Nginx web server has been down for more than 1 minute"
+
+      - alert: NginxHighErrorRate
+        expr: rate(nginx_http_requests_total{status=~"4..|5.."}[5m]) / rate(nginx_http_requests_total[5m]) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: nginx
+        annotations:
+          summary: "Nginx high error rate"
+          description: "Nginx error rate is {{ $value }}% over the last 5 minutes"
+
+      - alert: NginxHighResponseTime
+        expr: nginx_http_request_duration_seconds{quantile="0.95"} > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: nginx
+        annotations:
+          summary: "Nginx high response time"
+          description: "Nginx 95th percentile response time is {{ $value }}s"
+
+  # SSL certificate alerts
+  - name: ssl
+    rules:
+      - alert: SSLCertificateExpiringSoon
+        expr: probe_ssl_earliest_cert_expiry - time() < 86400 * 7
+        for: 1h
+        labels:
+          severity: warning
+          service: ssl
+        annotations:
+          summary: "SSL certificate expiring soon"
+          description: "SSL certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}"
+
+      - alert: SSLCertificateExpired
+        expr: probe_ssl_earliest_cert_expiry - time() <= 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ssl
+        annotations:
+          summary: "SSL certificate expired"
+          description: "SSL certificate for {{ $labels.instance }} has expired"
+
+      - alert: SSLCertificateInvalid
+        expr: probe_ssl_cert_not_after == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ssl
+        annotations:
+          summary: "SSL certificate is invalid"
+          description: "SSL certificate for {{ $labels.instance }} is invalid"
+
+  # External service monitoring
+  - name: external
+    rules:
+      - alert: WebsiteDown
+        expr: probe_success{job="blackbox-http"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: external
+        annotations:
+          summary: "Website is down"
+          description: "Website {{ $labels.instance }} has been down for more than 2 minutes"
+
+      - alert: WebsiteSlowResponse
+        expr: probe_duration_seconds{job="blackbox-http"} > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: external
+        annotations:
+          summary: "Website slow response"
+          description: "Website {{ $labels.instance }} response time is {{ $value }}s"
+
+  # Bot service alerts
+  - name: bot
+    rules:
+      - alert: BotServiceDown
+        expr: up{job="bot"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: bot
+        annotations:
+          summary: "Bot service is down"
+          description: "WhatsApp bot service has been down for more than 2 minutes"
+
+      - alert: BotHighErrorRate
+        expr: rate(bot_errors_total[5m]) / rate(bot_messages_total[5m]) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: bot
+        annotations:
+          summary: "Bot high error rate"
+          description: "Bot error rate is {{ $value }}% over the last 5 minutes"
+
+      - alert: BotMessageProcessingDelay
+        expr: bot_message_processing_duration_seconds{quantile="0.95"} > 30
+        for: 5m
+        labels:
+          severity: warning
+          service: bot
+        annotations:
+          summary: "Bot message processing delay"
+          description: "Bot 95th percentile message processing time is {{ $value }}s"
+
+  # Business metrics alerts
+  - name: business
+    rules:
+      - alert: LowOrderVolume
+        expr: rate(orders_created_total[1h]) * 3600 < 5
+        for: 2h
+        labels:
+          severity: warning
+          service: business
+        annotations:
+          summary: "Low order volume detected"
+          description: "Order creation rate is below 5 orders per hour for 2 hours"
+
+      - alert: HighOrderFailureRate
+        expr: rate(orders_failed_total[15m]) / rate(orders_total[15m]) * 100 > 20
+        for: 10m
+        labels:
+          severity: critical
+          service: business
+        annotations:
+          summary: "High order failure rate"
+          description: "Order failure rate is {{ $value }}% over the last 15 minutes"
+
+      - alert: PaymentProcessingIssues
+        expr: rate(payment_failures_total[10m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          service: business
+        annotations:
+          summary: "Payment processing issues detected"
+          description: "Payment failure rate is above normal levels"

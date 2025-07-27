@@ -1,0 +1,493 @@
+# Infrastructure Deployment GitHub Actions Workflow
+# Automated deployment of Station2290 infrastructure to production
+
+name: 🚀 Deploy Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+      - production
+    paths:
+      - 'docker/**'
+      - 'nginx/**'
+      - 'configs/**'
+      - 'deployment/**'
+      - 'monitoring/**'
+      - '.github/workflows/deploy-infrastructure.yml'
+  
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'docker/**'
+      - 'nginx/**'
+      - 'configs/**'
+      - 'deployment/**'
+      - 'monitoring/**'
+  
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+      skip_backup:
+        description: 'Skip backup creation'
+        required: false
+        default: false
+        type: boolean
+      force_deployment:
+        description: 'Force deployment even if health checks fail'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  DOCKER_BUILDKIT: 1
+  COMPOSE_DOCKER_CLI_BUILD: 1
+  DEPLOYMENT_TIMEOUT: 1800
+  HEALTH_CHECK_RETRIES: 30
+
+jobs:
+  validate:
+    name: 🔍 Validate Infrastructure
+    runs-on: ubuntu-latest
+    outputs:
+      changed-files: ${{ steps.changes.outputs.changed-files }}
+      should-deploy: ${{ steps.changes.outputs.should-deploy }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        id: changes
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "changed-files=manual-deployment" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+            echo "changed-files=pr-validation" >> $GITHUB_OUTPUT
+          else
+            # Check for infrastructure changes
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -E '^(docker|nginx|configs|deployment|monitoring)/' || echo "")
+            if [[ -n "$CHANGED_FILES" ]]; then
+              echo "should-deploy=true" >> $GITHUB_OUTPUT
+              echo "changed-files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+            else
+              echo "should-deploy=false" >> $GITHUB_OUTPUT
+              echo "changed-files=none" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate Docker Compose files
+        run: |
+          echo "🔍 Validating Docker Compose configurations..."
+          
+          # Validate production compose file
+          if [[ -f "docker/production/docker-compose.yml" ]]; then
+            echo "Validating production Docker Compose..."
+            docker-compose -f docker/production/docker-compose.yml config > /dev/null
+            echo "✅ Production Docker Compose is valid"
+          fi
+          
+          # Validate development compose file
+          if [[ -f "docker/development/docker-compose.yml" ]]; then
+            echo "Validating development Docker Compose..."
+            docker-compose -f docker/development/docker-compose.yml config > /dev/null
+            echo "✅ Development Docker Compose is valid"
+          fi
+
+      - name: Validate Nginx configurations
+        run: |
+          echo "🔍 Validating Nginx configurations..."
+          
+          # Create temporary nginx container for validation
+          docker run --rm -v $(pwd)/nginx:/etc/nginx:ro nginx:1.25-alpine nginx -t
+          echo "✅ Nginx configurations are valid"
+
+      - name: Validate Prometheus configuration
+        run: |
+          echo "🔍 Validating Prometheus configuration..."
+          
+          if [[ -f "monitoring/prometheus/prometheus.yml" ]]; then
+            # Use promtool to validate prometheus config
+            docker run --rm -v $(pwd)/monitoring/prometheus:/etc/prometheus:ro prom/prometheus:latest promtool check config /etc/prometheus/prometheus.yml
+            echo "✅ Prometheus configuration is valid"
+          fi
+
+      - name: Validate Loki configuration
+        run: |
+          echo "🔍 Validating Loki configuration..."
+          
+          if [[ -f "monitoring/loki/loki-config.yaml" ]]; then
+            # Basic YAML validation
+            docker run --rm -v $(pwd)/monitoring/loki:/etc/loki:ro grafana/loki:latest -config.file=/etc/loki/loki-config.yaml -verify-config
+            echo "✅ Loki configuration is valid"
+          fi
+
+      - name: Security scan
+        run: |
+          echo "🔍 Running security scans..."
+          
+          # Check for secrets in configuration files
+          echo "Checking for potential secrets..."
+          if grep -r -i "password.*=" configs/ | grep -v "change-this\|your-\|example\|template" | grep -v ".template"; then
+            echo "❌ Potential hardcoded secrets found!"
+            exit 1
+          fi
+          
+          # Check for proper file permissions in scripts
+          echo "Checking script permissions..."
+          find deployment/ -name "*.sh" ! -perm -u+x -exec echo "Script not executable: {}" \;
+          
+          echo "✅ Security checks passed"
+
+  build-test:
+    name: 🏗️ Build and Test
+    runs-on: ubuntu-latest
+    needs: validate
+    if: needs.validate.outputs.should-deploy == 'true' || github.event_name == 'pull_request'
+    
+    strategy:
+      matrix:
+        component:
+          - nginx
+          - monitoring
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and test Nginx
+        if: matrix.component == 'nginx'
+        run: |
+          echo "🏗️ Building and testing Nginx configuration..."
+          
+          # Build custom nginx image with configs
+          cat > Dockerfile.nginx.test << 'EOF'
+          FROM nginx:1.25-alpine
+          COPY nginx/nginx.conf /etc/nginx/nginx.conf
+          COPY nginx/sites-available /etc/nginx/sites-available
+          COPY nginx/snippets /etc/nginx/snippets
+          RUN mkdir -p /etc/nginx/sites-enabled
+          RUN nginx -t
+          EOF
+          
+          docker build -f Dockerfile.nginx.test -t nginx-test .
+          echo "✅ Nginx configuration test passed"
+
+      - name: Test monitoring stack
+        if: matrix.component == 'monitoring'
+        run: |
+          echo "🏗️ Testing monitoring stack..."
+          
+          # Test Prometheus configuration
+          docker run --rm -v $(pwd)/monitoring/prometheus:/etc/prometheus:ro \
+            prom/prometheus:latest promtool check config /etc/prometheus/prometheus.yml
+          
+          # Test alerting rules
+          if [[ -f "monitoring/prometheus/rules/alerts.yml" ]]; then
+            docker run --rm -v $(pwd)/monitoring/prometheus:/etc/prometheus:ro \
+              prom/prometheus:latest promtool check rules /etc/prometheus/rules/alerts.yml
+          fi
+          
+          echo "✅ Monitoring configuration test passed"
+
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [validate, build-test]
+    if: needs.validate.outputs.should-deploy == 'true' && github.ref == 'refs/heads/main'
+    environment: staging
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+
+      - name: Deploy to staging
+        run: |
+          echo "🚀 Deploying to staging environment..."
+          
+          # Copy infrastructure files to staging server
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='*.log' \
+            --exclude='node_modules' \
+            ./ ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}:/opt/station2290/infrastructure/
+          
+          # Deploy to staging
+          ssh ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }} << 'EOF'
+            cd /opt/station2290/infrastructure
+            
+            # Copy environment configuration
+            cp configs/environment/.env.staging.template configs/environment/.env.prod
+            
+            # Run deployment script in staging mode
+            ./deployment/scripts/deploy-production.sh --skip-backup
+          EOF
+          
+          echo "✅ Staging deployment completed"
+
+      - name: Run staging health checks
+        run: |
+          echo "🔍 Running staging health checks..."
+          
+          # Wait for services to start
+          sleep 60
+          
+          # Check staging endpoints
+          STAGING_ENDPOINTS=(
+            "https://staging.station2290.ru/health"
+            "https://api-staging.station2290.ru/health"
+          )
+          
+          for endpoint in "${STAGING_ENDPOINTS[@]}"; do
+            echo "Checking: $endpoint"
+            for i in {1..10}; do
+              if curl -sSf --max-time 10 "$endpoint" > /dev/null; then
+                echo "✅ $endpoint is healthy"
+                break
+              fi
+              echo "Attempt $i/10 failed, retrying..."
+              sleep 10
+            done
+          done
+          
+          echo "✅ Staging health checks completed"
+
+  deploy-production:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [validate, build-test, deploy-staging]
+    if: needs.validate.outputs.should-deploy == 'true' && (github.ref == 'refs/heads/production' || github.event.inputs.environment == 'production')
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.PRODUCTION_SSH_KEY }}
+
+      - name: Pre-deployment checks
+        run: |
+          echo "🔍 Running pre-deployment checks..."
+          
+          # Check if production server is accessible
+          ssh -o ConnectTimeout=10 ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} echo "Production server accessible"
+          
+          # Check disk space
+          DISK_USAGE=$(ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} "df /opt/station2290 | awk 'NR==2 {print \$5}' | sed 's/%//'")
+          if [[ $DISK_USAGE -gt 85 ]]; then
+            echo "❌ Disk usage is ${DISK_USAGE}% - deployment aborted"
+            exit 1
+          fi
+          
+          echo "✅ Pre-deployment checks passed"
+
+      - name: Create deployment backup
+        if: github.event.inputs.skip_backup != 'true'
+        run: |
+          echo "💾 Creating deployment backup..."
+          
+          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+            cd /opt/station2290
+            
+            # Create backup directory
+            BACKUP_DIR="/opt/station2290/backups/pre-deployment-$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "$BACKUP_DIR"
+            
+            # Backup current infrastructure
+            if [[ -d "/opt/station2290/infrastructure" ]]; then
+              cp -r infrastructure/ "$BACKUP_DIR/"
+            fi
+            
+            # Backup current environment
+            if [[ -f "/opt/station2290/infrastructure/configs/environment/.env.prod" ]]; then
+              cp infrastructure/configs/environment/.env.prod "$BACKUP_DIR/"
+            fi
+            
+            echo "✅ Backup created: $BACKUP_DIR"
+          EOF
+
+      - name: Deploy infrastructure
+        run: |
+          echo "🚀 Deploying infrastructure to production..."
+          
+          # Copy infrastructure files to production server
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='*.log' \
+            --exclude='node_modules' \
+            --exclude='configs/environment/.env.*' \
+            ./ ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/station2290/infrastructure/
+          
+          # Set deployment flags
+          DEPLOY_FLAGS=""
+          if [[ "${{ github.event.inputs.skip_backup }}" == "true" ]]; then
+            DEPLOY_FLAGS="$DEPLOY_FLAGS --skip-backup"
+          fi
+          
+          # Deploy to production
+          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << EOF
+            cd /opt/station2290/infrastructure
+            
+            # Make scripts executable
+            chmod +x deployment/scripts/*.sh
+            chmod +x deployment/ssl/*.sh
+            
+            # Run deployment script
+            ./deployment/scripts/deploy-production.sh $DEPLOY_FLAGS
+          EOF
+          
+          echo "✅ Production deployment completed"
+
+      - name: Comprehensive health checks
+        run: |
+          echo "🔍 Running comprehensive health checks..."
+          
+          # Wait for services to stabilize
+          sleep 120
+          
+          # Check production endpoints
+          PRODUCTION_ENDPOINTS=(
+            "https://station2290.ru/health"
+            "https://api.station2290.ru/health"
+            "https://adminka.station2290.ru"
+            "https://orders.station2290.ru"
+            "https://bot.station2290.ru/health"
+          )
+          
+          FAILED_CHECKS=0
+          
+          for endpoint in "${PRODUCTION_ENDPOINTS[@]}"; do
+            echo "Checking: $endpoint"
+            
+            SUCCESS=false
+            for i in {1..30}; do
+              if curl -sSf --max-time 10 "$endpoint" > /dev/null; then
+                echo "✅ $endpoint is healthy"
+                SUCCESS=true
+                break
+              fi
+              echo "Attempt $i/30 failed, retrying in 10s..."
+              sleep 10
+            done
+            
+            if [[ "$SUCCESS" == "false" ]]; then
+              echo "❌ $endpoint failed health check"
+              FAILED_CHECKS=$((FAILED_CHECKS + 1))
+            fi
+          done
+          
+          if [[ $FAILED_CHECKS -gt 0 ]] && [[ "${{ github.event.inputs.force_deployment }}" != "true" ]]; then
+            echo "❌ $FAILED_CHECKS health checks failed - deployment may need rollback"
+            exit 1
+          fi
+          
+          echo "✅ Health checks completed"
+
+      - name: SSL certificate verification
+        run: |
+          echo "🔒 Verifying SSL certificates..."
+          
+          DOMAINS=("station2290.ru" "api.station2290.ru" "adminka.station2290.ru" "orders.station2290.ru" "bot.station2290.ru")
+          
+          for domain in "${DOMAINS[@]}"; do
+            echo "Checking SSL for: $domain"
+            
+            # Check certificate expiry
+            EXPIRY=$(echo | openssl s_client -servername "$domain" -connect "$domain:443" 2>/dev/null | openssl x509 -noout -enddate | cut -d= -f2)
+            EXPIRY_TIMESTAMP=$(date -d "$EXPIRY" +%s)
+            CURRENT_TIMESTAMP=$(date +%s)
+            DAYS_UNTIL_EXPIRY=$(( (EXPIRY_TIMESTAMP - CURRENT_TIMESTAMP) / 86400 ))
+            
+            if [[ $DAYS_UNTIL_EXPIRY -gt 30 ]]; then
+              echo "✅ SSL certificate for $domain is valid for $DAYS_UNTIL_EXPIRY days"
+            else
+              echo "⚠️ SSL certificate for $domain expires in $DAYS_UNTIL_EXPIRY days"
+            fi
+          done
+          
+          echo "✅ SSL verification completed"
+
+      - name: Post-deployment notifications
+        if: always()
+        run: |
+          # Determine deployment status
+          if [[ "${{ job.status }}" == "success" ]]; then
+            STATUS="✅ SUCCESS"
+            COLOR="good"
+            MESSAGE="Infrastructure deployment completed successfully"
+          else
+            STATUS="❌ FAILED"
+            COLOR="danger"
+            MESSAGE="Infrastructure deployment failed"
+          fi
+          
+          # Send Slack notification if webhook is configured
+          if [[ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{
+                \"attachments\": [{
+                  \"color\": \"$COLOR\",
+                  \"title\": \"Station2290 Infrastructure Deployment\",
+                  \"text\": \"$STATUS: $MESSAGE\",
+                  \"fields\": [
+                    {\"title\": \"Environment\", \"value\": \"Production\", \"short\": true},
+                    {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
+                    {\"title\": \"Workflow\", \"value\": \"${{ github.workflow }}\", \"short\": true}
+                  ]
+                }]
+              }" ${{ secrets.SLACK_WEBHOOK_URL }}
+          fi
+          
+          echo "$STATUS: $MESSAGE"
+
+  cleanup:
+    name: 🧹 Cleanup
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: always()
+    
+    steps:
+      - name: Cleanup old deployments
+        if: needs.deploy-production.result == 'success'
+        run: |
+          echo "🧹 Cleaning up old deployment artifacts..."
+          
+          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+            # Keep only last 5 backups
+            cd /opt/station2290/backups
+            ls -t | tail -n +6 | xargs -r rm -rf
+            
+            # Clean up old Docker images
+            docker image prune -f
+            
+            # Clean up old logs
+            find /opt/station2290/logs -name "*.log" -mtime +30 -delete
+            
+            echo "✅ Cleanup completed"
+          EOF
