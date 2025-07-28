@@ -274,12 +274,12 @@ test_docker_compose() {
     
     cd docker/production
     
-    if docker-compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml config > /dev/null 2>&1; then
+    if docker compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml config > /dev/null 2>&1; then
         print_success "Docker Compose configuration is valid"
         return 0
     else
         print_error "Docker Compose configuration has errors:"
-        docker-compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml config
+        docker compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml config
         return 1
     fi
 }
@@ -291,23 +291,23 @@ deploy_optimized() {
     cd docker/production
     
     # Stop any existing containers
-    docker-compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml down || true
+    docker compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml down || true
     
     # Start core services first (database, cache)
     print_status "Starting core services..."
-    docker-compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml up -d postgres redis
+    docker compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml up -d postgres redis
     
     sleep 10
     
     # Start web services
     print_status "Starting web services..."
-    docker-compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml up -d nginx
+    docker compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml up -d nginx
     
     sleep 5
     
     # Start monitoring (optional, can be skipped on very low memory)
     print_status "Starting monitoring services..."
-    docker-compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml up -d prometheus grafana loki
+    docker compose -f docker-compose.infrastructure.yml -f docker-compose.override.yml up -d prometheus grafana loki
     
     print_success "Deployment complete"
 }
