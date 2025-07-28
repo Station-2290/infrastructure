@@ -45,9 +45,7 @@ services:
     image: nginx:alpine
     container_name: station2290-nginx
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+    network_mode: host
     volumes:
       - ../../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ../../nginx/sites-available:/etc/nginx/sites-available:ro
@@ -55,8 +53,7 @@ services:
       - ../../nginx/snippets:/etc/nginx/snippets:ro
       - /opt/station2290/ssl:/etc/nginx/ssl:ro
       - /opt/station2290/logs/nginx:/var/log/nginx
-    networks:
-      - station2290-network
+      - /tmp/nginx_cache:/var/cache/nginx
     depends_on:
       - postgres
       - redis
