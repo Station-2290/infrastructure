@@ -70,7 +70,10 @@ services:
     volumes:
       - /opt/station2290/ssl:/etc/letsencrypt
       - /opt/station2290/logs/certbot:/var/log/letsencrypt
+      - /var/www/certbot:/var/www/certbot
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - station2290-network
 
   # Monitoring - Prometheus
   prometheus:
