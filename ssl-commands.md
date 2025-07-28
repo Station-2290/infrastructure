@@ -1,7 +1,12 @@
 # SSL Setup Commands Using Existing Certbot Container
 
-## Prerequisites
-1. Domain `station2290.com` should point to your server IP (85.193.95.44)
+## Domain Configured: station2290.ru
+✅ **Domain DNS properly configured** - all subdomains point to 85.193.95.44
+
+## SSL Setup Process
+
+### Prerequisites ✅
+1. Domain `station2290.ru` points to your server IP (85.193.95.44) ✅
 2. Ports 80 and 443 should be accessible from the internet
 3. Infrastructure should be running with `docker compose up -d`
 
@@ -42,18 +47,18 @@ docker run --rm \
   certbot/certbot certonly \
   --webroot \
   --webroot-path=/var/www/certbot \
-  --email admin@station2290.com \
+  --email admin@station2290.ru \
   --agree-tos \
   --no-eff-email \
-  --domains station2290.com \
-  --domains www.station2290.com
+  --domains station2290.ru \
+  --domains www.station2290.ru
 ```
 
 ## Step 4: Create certificate symlinks for nginx
 ```bash
 # Create symlinks to Let's Encrypt certificates
-sudo ln -sf /opt/station2290/ssl/live/station2290.com/fullchain.pem /opt/station2290/ssl/certs/station2290.crt
-sudo ln -sf /opt/station2290/ssl/live/station2290.com/privkey.pem /opt/station2290/ssl/private/station2290.key
+sudo ln -sf /opt/station2290/ssl/live/station2290.ru/fullchain.pem /opt/station2290/ssl/certs/station2290.crt
+sudo ln -sf /opt/station2290/ssl/live/station2290.ru/privkey.pem /opt/station2290/ssl/private/station2290.key
 ```
 
 ## Step 5: Enable full site configuration with SSL
@@ -75,16 +80,16 @@ docker start station2290-certbot
 docker exec station2290-nginx nginx -t
 
 # Test HTTPS access
-curl -k https://station2290.com/health
+curl -k https://station2290.ru/health
 
 # Check certificate information
-openssl x509 -in /opt/station2290/ssl/live/station2290.com/cert.pem -text -noout | grep -E "(Subject:|Not After:|DNS:)"
+openssl x509 -in /opt/station2290/ssl/live/station2290.ru/cert.pem -text -noout | grep -E "(Subject:|Not After:|DNS:)"
 ```
 
 ## Troubleshooting
 If certificate generation fails:
-1. Check domain DNS: `nslookup station2290.com`
-2. Check port 80 accessibility: `curl http://station2290.com/.well-known/acme-challenge/test`
+1. Check domain DNS: `nslookup station2290.ru`
+2. Check port 80 accessibility: `curl http://station2290.ru/.well-known/acme-challenge/test`
 3. Check nginx logs: `docker logs station2290-nginx`
 4. Check certbot logs: `cat /opt/station2290/logs/certbot/letsencrypt.log`
 
