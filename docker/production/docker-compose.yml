@@ -465,7 +465,7 @@ services:
       - station2290_network
     environment:
       DOMAINS: ${SSL_DOMAINS:-station2290.ru,www.station2290.ru,api.station2290.ru,adminka.station2290.ru,orders.station2290.ru,bot.station2290.ru}
-      EMAIL: ${SSL_EMAIL:-admin@station2290.ru}
+      EMAIL: ${SSL_EMAIL:-n1k3f1t@gmail.com}
     command: >
       sh -c "
         echo 'Starting Certbot service...'
@@ -539,7 +539,7 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-worldmap-panel
-      GF_SERVER_ROOT_URL: https://monitoring.station2290.ru
+      GF_SERVER_ROOT_URL: https://monitoring.station2290.ru:3010
       GF_SERVER_DOMAIN: monitoring.station2290.ru
     volumes:
       - grafana_data:/var/lib/grafana
@@ -548,7 +548,7 @@ services:
     networks:
       - monitoring_network
     ports:
-      - "127.0.0.1:3001:3000"
+      - "127.0.0.1:3010:3000"
     depends_on:
       - prometheus
     deploy:

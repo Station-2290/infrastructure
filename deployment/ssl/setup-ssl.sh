@@ -26,7 +26,7 @@ RENEWAL_HOOKS_DIR="$SSL_DIR/renewal-hooks"
 
 # Default values
 DOMAINS="${SSL_DOMAINS:-station2290.ru,www.station2290.ru,api.station2290.ru,adminka.station2290.ru,orders.station2290.ru,bot.station2290.ru}"
-EMAIL="${SSL_EMAIL:-admin@station2290.ru}"
+EMAIL="${SSL_EMAIL:-n1k3f1t@gmail.com}"
 STAGING="${SSL_STAGING:-false}"
 FORCE_RENEWAL="${SSL_FORCE_RENEWAL:-false}"
 DRY_RUN="${SSL_DRY_RUN:-false}"

@@ -47,7 +47,7 @@ docker run --rm \
   certbot/certbot certonly \
   --webroot \
   --webroot-path=/var/www/certbot \
-  --email admin@station2290.ru \
+  --email n1k3f1t@gmail.com \
   --agree-tos \
   --no-eff-email \
   --domains station2290.ru \

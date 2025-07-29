@@ -141,7 +141,7 @@ OPENAI_API_KEY=your-openai-api-key
 COFFEE_SHOP_API_KEY=your-coffee-shop-api-key
 
 # SSL
-SSL_EMAIL=admin@station2290.ru
+SSL_EMAIL=n1k3f1t@gmail.com
 SSL_DOMAINS=station2290.ru,www.station2290.ru,api.station2290.ru,adminka.station2290.ru,orders.station2290.ru,bot.station2290.ru
 
 # Monitoring
