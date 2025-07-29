@@ -51,9 +51,10 @@ services:
       - ../../nginx/sites-available:/etc/nginx/sites-available:ro
       - ../../nginx/sites-enabled:/etc/nginx/sites-enabled:ro
       - ../../nginx/snippets:/etc/nginx/snippets:ro
-      - /opt/station2290/ssl:/etc/nginx/ssl:ro
+      - /opt/station2290/ssl:/etc/letsencrypt:ro
       - /opt/station2290/logs/nginx:/var/log/nginx
       - /tmp/nginx_cache:/var/cache/nginx
+      - /var/www/certbot:/var/www/certbot:ro
     depends_on:
       - postgres
       - redis
